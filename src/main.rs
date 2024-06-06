@@ -3,8 +3,8 @@ use regex::Regex;
 use std::{
     env,
     error::Error,
-    fs::{metadata, read_dir},
-    path::Path,
+    fs::metadata,
+    path::{Path, PathBuf},
 };
 
 #[derive(Parser)]
@@ -22,13 +22,17 @@ struct BulkCp {
     #[arg(short, long, conflicts_with("dry_run"))]
     silent: bool,
 
-    /// Don't require pattern to patch the whole filename
+    /// Don't require pattern to patch the whole filename (non-anchored)
     #[arg(short)]
     floating: bool,
 
+    /// Recurse when encountering a directory
+    #[arg(short, long)]
+    recursive: bool,
+
     /// Regex to match against. Only files in the current directory are tested,
     /// and are matched only on their filename, without the preceding `./`.
-    /// There is an implicit `^` and `$` surrounding the pattern if the `-f`
+    /// There are implicit anchors surrounding the pattern if the `-f`
     /// flag is not included.
     pattern: String,
 
@@ -98,47 +102,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     let regex = Regex::new(&pattern)?;
 
-    let mut changes = Vec::new();
-
-    let mut entries = read_dir(".")?;
-    while let Some(entry) = entries.next() {
-        let entry = entry?; // crash
-        if !entry.file_type().is_ok_and(|x| x.is_file()) {
-            continue;
-        }
-
-        let filename = entry.file_name();
-        let match_str = &filename
-            .to_str()
-            .ok_or("filename is not valid utf-8, for some reason")?;
-        let captures = regex.captures(match_str);
-        if let Some(capture) = captures {
-            let mut s = String::with_capacity(filename.len());
-
-            for part in args.destination.iter() {
-                match part {
-                    DestinationPatternPart::String(string) => s.push_str(&string),
-                    DestinationPatternPart::Substitution(n) => {
-                        s.push_str(capture.get(*n).unwrap().as_str())
-                    }
-                }
-            }
-
-            if metadata(&s).is_ok_and(|metadata| metadata.is_dir()) {
-                if !s.ends_with('/') {
-                    s.push('/');
-                }
-                s.push_str(match_str);
-            }
-
-            changes.push((filename, s));
-        }
-    }
+    let mut changes = get_changes_r(
+        args.recursive,
+        &regex,
+        &args.destination,
+        PathBuf::from("."),
+    )?;
 
     let old_len = changes.len();
     changes.dedup_by(|a, b| a.1 == b.1);
     if changes.len() != old_len {
         return Err("Can't copy multiple files to same destination".into());
+    }
+    if changes.len() == 0 {
+        return Err("Nothing to do...".into());
     }
 
     let moving = args.mv
@@ -156,7 +133,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     for change in changes.into_iter() {
         if !args.silent {
-            println!("{} -> {}", change.0.to_str().unwrap(), change.1);
+            println!("{} -> {}", &change.0.to_string_lossy()[2..], change.1);
         }
         if !args.dry_run {
             if moving {
@@ -168,4 +145,57 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
+}
+
+fn get_changes_r(
+    should_recurse: bool,
+    regex: &Regex,
+    destination: &DestinationPattern,
+    path: PathBuf,
+) -> Result<Vec<(PathBuf, String)>, Box<dyn Error>> {
+    let mut changes = Vec::new();
+    let mut entries = path.read_dir()?;
+    while let Some(entry) = entries.next() {
+        let entry = entry?; // crash
+        let file_type = entry.file_type()?;
+
+        let mut path = path.clone();
+        path.push(entry.file_name());
+
+        if file_type.is_dir() {
+            if should_recurse {
+                changes.extend(get_changes_r(true, regex, destination, path)?);
+            }
+
+            continue;
+        }
+
+        let match_str = &path
+            .to_str()
+            .ok_or("filename is not valid utf-8, for some reason")?[2..]; // strip the dots off??
+        let captures = regex.captures(match_str);
+        if let Some(capture) = captures {
+            let mut s = String::new();
+
+            for part in destination.iter() {
+                match part {
+                    DestinationPatternPart::String(string) => s.push_str(&string),
+                    DestinationPatternPart::Substitution(n) => {
+                        s.push_str(capture.get(*n).unwrap().as_str())
+                    }
+                }
+            }
+
+            if metadata(&s).is_ok_and(|metadata| metadata.is_dir()) {
+                if !s.ends_with('/') {
+                    s.push('/');
+                }
+                s.push_str(match_str);
+            }
+
+            changes.push((path, s));
+        }
+    }
+
+    Ok(changes)
 }

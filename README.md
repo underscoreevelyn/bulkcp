@@ -24,6 +24,15 @@ bulkmv 'a\\.(?:[^.])+' dir/ --dry-run
 # a.txt -> dir/a.txt
 # a.md -> dir/a.md
 # (filesystem isn't actually touched)
+
+bulkcp '(a|b)/(a.+)' %1-%2
+# (does not match anything)
+bulkcp -r '(a|b)/(a.+)' %1-%2
+# Copying:
+# a/a.txt -> a-a.txt
+# b/a.txt -> b-a.txt
 ```
 
-I made this in an afternoon because I was bored. You should probably just use rename.
+I made this in an afternoon because I was bored. You should probably just use rename.  
+
+i wonder what happens when you feed this thing a symlink?
