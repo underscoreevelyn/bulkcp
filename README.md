@@ -31,6 +31,19 @@ bulkcp -r '(a|b)/(a.+)' %1-%2
 # Copying:
 # a/a.txt -> a-a.txt
 # b/a.txt -> b-a.txt
+
+bulkcp .+ %U0
+# Copying:
+# a.txt -> A.TXT
+# b.txt -> B.TXT
+
+bulkcp .+ %L0
+# Copying:
+# README.md -> readme.md
+
+bulkcp '(.+)-(.+)' %C1-%C2
+# Copying:
+# inconvenient-file.txt -> Inconvenient-File.txt
 ```
 
 I made this in an afternoon because I was bored. You should probably just use rename.  

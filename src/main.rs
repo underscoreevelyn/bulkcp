@@ -1,5 +1,5 @@
 use clap::Parser;
-use regex::Regex;
+use regex::{Captures, Regex};
 use std::{
     env,
     error::Error,
@@ -38,7 +38,11 @@ struct BulkCp {
 
     /// The destination to copy the files to. This is a pattern which will
     /// substitute `%[0-9]` with that numbered capture group. Use `%%` to
-    /// insert a single percent symbol.
+    /// insert a single percent symbol. Use %U\d, %L\d, or %C\d to apply formatting
+    /// to a capture group:
+    /// - %U uppercases all character
+    /// - %L lowercases all character
+    /// - %C uppercases only the first character
     #[arg(value_parser = parse_destination)]
     destination: &'static DestinationPattern,
 }
@@ -47,13 +51,29 @@ type DestinationPattern = [DestinationPatternPart];
 enum DestinationPatternPart {
     String(String),
     Substitution(usize),
+    FormattedSubstitution(FormatKind, usize),
+}
+
+#[derive(Clone, Copy)]
+enum FormatKind {
+    Capitalize,
+    Uppercase,
+    Lowercase,
 }
 
 fn parse_destination<'a>(s: &str) -> Result<&'a DestinationPattern, Box<dyn Error + Send + Sync>> {
     let mut destination = vec![DestinationPatternPart::String(String::new())];
     let mut parse_state = 0;
+    let mut format_kind = FormatKind::Capitalize;
     for c in s.chars() {
         match (c, parse_state) {
+            (c, 2) => {
+                destination.push(DestinationPatternPart::FormattedSubstitution(
+                    format_kind,
+                    c.to_digit(10).unwrap() as usize,
+                ));
+                parse_state = 0;
+            }
             ('%', 1) => {
                 let last = destination.last_mut().unwrap();
                 if let DestinationPatternPart::String(last) = last {
@@ -67,6 +87,18 @@ fn parse_destination<'a>(s: &str) -> Result<&'a DestinationPattern, Box<dyn Erro
                 ));
                 destination.push(DestinationPatternPart::String(String::new()));
                 parse_state = 0;
+            }
+            ('U', 1) => {
+                format_kind = FormatKind::Uppercase;
+                parse_state = 2;
+            }
+            ('L', 1) => {
+                format_kind = FormatKind::Lowercase;
+                parse_state = 2;
+            }
+            ('C', 1) => {
+                format_kind = FormatKind::Capitalize;
+                parse_state = 2;
             }
             (c, 1) => {
                 let last = destination.last_mut().unwrap();
@@ -175,16 +207,7 @@ fn get_changes_r(
             .ok_or("filename is not valid utf-8, for some reason")?[2..]; // strip the dots off??
         let captures = regex.captures(match_str);
         if let Some(capture) = captures {
-            let mut s = String::new();
-
-            for part in destination.iter() {
-                match part {
-                    DestinationPatternPart::String(string) => s.push_str(&string),
-                    DestinationPatternPart::Substitution(n) => {
-                        s.push_str(capture.get(*n).unwrap().as_str())
-                    }
-                }
-            }
+            let mut s = build_destination(&destination, &capture);
 
             if metadata(&s).is_ok_and(|metadata| metadata.is_dir()) {
                 if !s.ends_with('/') {
@@ -198,4 +221,48 @@ fn get_changes_r(
     }
 
     Ok(changes)
+}
+
+fn build_destination(destination: &DestinationPattern, capture: &Captures) -> String {
+    let mut s = String::new();
+
+    for part in destination.iter() {
+        match part {
+            DestinationPatternPart::String(string) => s.push_str(&string),
+            DestinationPatternPart::Substitution(n) => {
+                s.push_str(capture.get(*n).unwrap().as_str())
+            }
+            DestinationPatternPart::FormattedSubstitution(f, n) => match f {
+                FormatKind::Uppercase => {
+                    s.extend(
+                        capture
+                            .get(*n)
+                            .unwrap()
+                            .as_str()
+                            .chars()
+                            .map(|x| x.to_ascii_uppercase()),
+                    );
+                }
+                FormatKind::Lowercase => s.extend(
+                    capture
+                        .get(*n)
+                        .unwrap()
+                        .as_str()
+                        .chars()
+                        .map(|x| x.to_ascii_lowercase()),
+                ),
+                FormatKind::Capitalize => s.extend(
+                    capture
+                        .get(*n)
+                        .unwrap()
+                        .as_str()
+                        .chars()
+                        .enumerate()
+                        .map(|(i, x)| if i == 0 { x.to_ascii_uppercase() } else { x }),
+                ),
+            },
+        }
+    }
+
+    s
 }
